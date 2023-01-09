@@ -86,7 +86,7 @@ def uploadTrain():
     # 训练样本集比例
     fraction_train = 0.7
     # 隐层节点列表
-    ls_num_hide = [30]
+    ls_num_hide = [30, 30]
     # 批次大小列表
     ls_batch_size = [14]
     # 拆分训练集和测试集
@@ -119,8 +119,13 @@ def uploadTrain():
             model6x3 = BPNNRegression(org)
     
             # 这里采用 MSGD(multi-batch stochastic gradient descending) 进行模型的训练
-            ls_error_INTER = model6x3.MSGD(data_train, 6000, batch_size, 0.1, task = 'train', project_name = project_name)
-            
+            ls_error_INTER = model6x3.MSGD(data_train, 3000, batch_size, 0.1, task = 'train', project_name = project_name)
+            plt.plot(ls_error_INTER)
+            plt.xlabel('训练迭代次数',fontproperties = prop)
+            plt.ylabel('RMSE损失', fontproperties = prop)
+            plt.title(f'地层参数模型训练损失函数变化图', fontproperties = prop)
+            plt.savefig(f'./pic/{project_name}_modelTrain.jpg')
+            plt.close()
     
             # 模型测试部分
             
@@ -148,7 +153,7 @@ def uploadTrain():
                 min_meansure = measure[0]
                 path = f'./data/model/{project_name}6x3.json'
                 model6x3.download(path)
-    return '模型训练完成, 可以进行SGSI预测'
+    return f'./pic/{project_name}_modelTrain.jpg'
 
 @app.route("/file", methods=["POST"])
 def downloadFile():
@@ -219,6 +224,12 @@ def evaluateSGSI():
     org = [dim_in,num_hide,dim_out]
     model6x6 = BPNNRegression(org)
     ls_error_INTER = model6x6.MSGD(data_train, 3000, batch_size, 0.1, task='evaluate', project_name = project_name)
+    plt.plot(ls_error_INTER)
+    plt.xlabel('训练迭代次数',fontproperties = prop)
+    plt.ylabel('RMSE损失', fontproperties = prop)
+    plt.title(f'相互作用矩阵BP神经网络训练损失函数变化图', fontproperties = prop)
+    plt.savefig(f'./pic/{project_name}_evaluateModelTrain.jpg')
+    plt.close()
     li = len(col_l)
     lo = len(col_r)
     len_org = len(model6x6.sizes)-1
@@ -240,6 +251,11 @@ def evaluateSGSI():
         DF_INTERACTION.at[col,col] = 1
     MATRIX_INTERACTION = DF_INTERACTION.values
     print(MATRIX_INTERACTION)
+    interaction_list = list(MATRIX_INTERACTION.reshape(1, -1)[0])
+    interaction_string = ""
+    for item in interaction_list:
+        interaction_string += str(item)
+        interaction_string +=' '
     Ci = np.sum(MATRIX_INTERACTION, axis = 0)
     Ei = np.sum(MATRIX_INTERACTION, axis = 1)
     print(Ci, Ei)
@@ -263,7 +279,7 @@ def evaluateSGSI():
     plt.grid(color = 'gray', linestyle = '--')
     plt.savefig(f'./pic/{project_name}_SGSIEvaluate.jpg', dpi = 1000)
     plt.close()
-    return f'pic/{project_name}_SGSIEvaluate.jpg'
+    return json.dumps({"evaluateModelTrainPic":f'./pic/{project_name}_evaluateModelTrain.jpg',"interaction": interaction_string, "SGSIEvaluatePic":f'./pic/{project_name}_SGSIEvaluate.jpg'})
 
 # curl -F filename=@312_1.csv -F project_name=aaa -F Do=6 -F Di=5.25 -F Dc=6.14 https://dev.yijianar.com:8441/SGSI_Prediction
 @app.route("/SGSI_Prediction", methods=["POST"])
@@ -304,7 +320,7 @@ def predictSGSI():
         return 'csv文件需包含 地表变形 列'
 
     # 预测下一环三参数
-    col_use = ['舱内土压', '刀盘旋转速度', '刀盘扭矩', '总推力', '推进速度', '地表变形']
+    col_use = ['舱内土压', '刀盘旋转速度', '刀盘扭矩', '总推力', ' 推进速度', '地表变形']
     pd_file_filter = pd_file.copy()[col_use]
     data_stat = dataframe_percentile(pd_file_filter, col_use).T
     min_col = dict()
