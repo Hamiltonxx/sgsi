@@ -2,6 +2,7 @@ from flask import request, send_file
 from application import app
 import os
 import json
+import math
 from application.bp_final import BPNNRegression, df_to_list, anti_normalize, RMSE_M
 from application.report_percentile import dataframe_percentile
 import matplotlib
@@ -25,7 +26,40 @@ encodings = ['gb18030', 'utf-8']
 def progress():
     args = request.get_json(force=True)
     project_name, task = args['project_name'], args['task']
-    return r.get(f'{project_name}_{task}')
+    if task != 'evaluate':
+        return r.get(f'{project_name}_{task}')
+    else:
+        inter_list, SGSI_list = [], []
+        inter = r.get(f'{project_name}_{task}_inter')
+        SGSI = r.get(f'{project_name}_{task}_SGSI')
+        ring = r.get(f'{project_name}_{task}_ringNo')
+        for item in inter.split(','):
+            if '[' in item:
+                inter_list.append(float(item[1:]))
+            elif ']' in item:
+                inter_list.append(float(item[:-1]))
+            else:
+                inter_list.append(float(item))
+        inter = []
+        group_num = int(math.sqrt(len(inter_list)))
+        for i in range(group_num):
+            inter.append([inter_list[j] for j in range(group_num * i, group_num * (i + 1))])
+        for item in SGSI.split(','):
+            if '[' in item:
+                SGSI_list.append(float(item[1:]))
+            elif ']' in item:
+                SGSI_list.append(float(item[:-1]))
+            else:
+                SGSI_list.append(float(item))
+        ringNo = []
+        for item in ring.split(','):
+            if '[' in item:
+                ringNo.append(int(item[1:]))
+            elif ']' in item:
+                ringNo.append(int(item[:-1]))
+            else:
+                ringNo.append(int(item))
+        return json.dumps({'inter' : inter, 'SGSI' : SGSI_list, 'progress': r.get(f'{project_name}_{task}'), 'ringNo' : ringNo})
 
 # curl -X POST -F filename=@312_1.csv -F project_name=aaa https://dev.yijianar.com:8441/Upload_Train
 @app.route("/Upload_Train", methods=["POST"])
@@ -223,7 +257,15 @@ def evaluateSGSI():
     batch_size = 8
     org = [dim_in,num_hide,dim_out]
     model6x6 = BPNNRegression(org)
-    ls_error_INTER = model6x6.MSGD(data_train, 3000, batch_size, 0.1, task='evaluate', project_name = project_name)
+    # 提前求rank矩阵，并放入模型训练的过程中，以求模型训练阶段的相互作用矩阵和SGSI变化，放入redis中
+    pd_file_copy = pd_file.copy()[col_use]
+    pd_file_copy = get_rank(pd_file_copy, col_use)
+    rank_matrix = pd_file_copy.values
+    ringNo = pd_file['管片号码'].values # 明明是array，为啥传进去成了List?
+    ringNo_list = []
+    for i in range(len(ringNo)):
+        ringNo_list.append(int(ringNo[i]))
+    ls_error_INTER = model6x6.MSGD(data_train, 3000, batch_size, 0.1, task='evaluate', project_name = project_name, rank_matrix = rank_matrix, ringNo=ringNo_list)
     plt.plot(ls_error_INTER)
     plt.xlabel('训练迭代次数',fontproperties = prop)
     plt.ylabel('RMSE损失', fontproperties = prop)
@@ -250,25 +292,17 @@ def evaluateSGSI():
     for col in col_use:
         DF_INTERACTION.at[col,col] = 1
     MATRIX_INTERACTION = DF_INTERACTION.values
-    print(MATRIX_INTERACTION)
-    interaction_list = list(MATRIX_INTERACTION.reshape(1, -1)[0])
-    interaction_string = ""
-    for item in interaction_list:
-        interaction_string += str(item)
-        interaction_string +=' '
+    # print(MATRIX_INTERACTION)
+    interaction_list = list(list(MATRIX_INTERACTION[i]) for i in range(len(MATRIX_INTERACTION)))
     Ci = np.sum(MATRIX_INTERACTION, axis = 0)
     Ei = np.sum(MATRIX_INTERACTION, axis = 1)
     print(Ci, Ei)
     CE_sum = np.sum(Ci) + np.sum(Ei)
     w = [(Ci[i] + Ei[i]) / CE_sum for i in range(len(Ci))]
-    pd_file_copy = pd_file.copy()[col_use]
-    pd_file_copy = get_rank(pd_file_copy, col_use)
-    rank_matrix = pd_file_copy.values
     SGSI = []
     for i in range(len(pd_file_copy)):
         tmp  = [w[j] * rank_matrix[i][j] for j in range(len(w))]
         SGSI.append(sum(tmp) * 100)
-    ringNo = pd_file['管片号码'].values
     print(ringNo)
     print(SGSI)
     plt.plot(ringNo.reshape(1,-1), np.array(SGSI).reshape(1,-1), 'ro-', marker = 'o', markerfacecolor='white')
@@ -279,7 +313,7 @@ def evaluateSGSI():
     plt.grid(color = 'gray', linestyle = '--')
     plt.savefig(f'./pic/{project_name}_SGSIEvaluate.jpg', dpi = 1000)
     plt.close()
-    return json.dumps({"evaluateModelTrainPic":f'./pic/{project_name}_evaluateModelTrain.jpg',"interaction": interaction_string, "SGSIEvaluatePic":f'./pic/{project_name}_SGSIEvaluate.jpg'})
+    return json.dumps({"evaluateModelTrainPic":f'./pic/{project_name}_evaluateModelTrain.jpg',"interaction": interaction_list, "SGSIEvaluatePic":f'./pic/{project_name}_SGSIEvaluate.jpg'})
 
 # curl -F filename=@312_1.csv -F project_name=aaa -F Do=6 -F Di=5.25 -F Dc=6.14 https://dev.yijianar.com:8441/SGSI_Prediction
 @app.route("/SGSI_Prediction", methods=["POST"])
@@ -320,7 +354,7 @@ def predictSGSI():
         return 'csv文件需包含 地表变形 列'
 
     # 预测下一环三参数
-    col_use = ['舱内土压', '刀盘旋转速度', '刀盘扭矩', '总推力', ' 推进速度', '地表变形']
+    col_use = ['舱内土压', '刀盘旋转速度', '刀盘扭矩', '总推力', '推进速度', '地表变形']
     pd_file_filter = pd_file.copy()[col_use]
     data_stat = dataframe_percentile(pd_file_filter, col_use).T
     min_col = dict()

@@ -103,7 +103,7 @@ class BPNNRegression:
         
 #**************************** MBGD（开始） **************************** 
 
-    def MSGD(self, training_data, epochs = 3000, mini_batch_size = 1, eta = 0.1, error = 0.01, task=None, project_name = None):
+    def MSGD(self, training_data, epochs = 3000, mini_batch_size = 1, eta = 0.1, error = 0.01, task=None, project_name = None, rank_matrix=None, ringNo=None):
     
         # 小批量随机梯度下降法
         # eta: 学习速率
@@ -144,7 +144,48 @@ class BPNNRegression:
                 print("Epoch {0} Error {1}".format(j, self.err_epoch[-1]))
             if self.err_epoch[-1] < error:
                 break
-
+            # 在6->6的模型训练阶段，如果传进来了rank_matrix，则要向redis中存放相互作用矩阵和SGSI
+            if rank_matrix is not None:
+                col_l, col_r, col_use= ['推力指数', '扭矩指数', '推进速度', '刀盘旋转速度', '能耗', '地表变形'], ['推力指数', '扭矩指数', '推进速度', '刀盘旋转速度', '能耗', '地表变形'], ['推力指数', '扭矩指数', '推进速度', '刀盘旋转速度', '能耗', '地表变形']
+                li = len(col_l)
+                lo = len(col_r)
+                len_org = len(self.sizes)-1
+                MATRIX_INTERACTION = []
+                for ci in range(li):
+                    MATRIX_INTERACTION.append([]) # "作用"
+                    for co in range(lo):
+                        INTER_IO = 0
+                        INTER_IO += pd.DataFrame(self.weights[0])[ci].sum() # ??? 修改公式bug, 应为第一层的第ci列
+                        for layer in self.weights[1:len_org-1]:
+                            INTER_IO += sum(sum(layer))
+                        INTER_IO += sum(self.weights[-1][co])
+                        MATRIX_INTERACTION[-1].append(INTER_IO)
+                DF_INTERACTION = pd.DataFrame(MATRIX_INTERACTION, index = col_l, columns = col_r)
+                v_max = DF_INTERACTION.values.max()
+                v_min = DF_INTERACTION.values.min()
+                DF_INTERACTION = (DF_INTERACTION - v_min)/ (v_max - v_min)
+                for col in col_use:
+                    DF_INTERACTION.at[col,col] = 1
+                MATRIX_INTERACTION = DF_INTERACTION.values
+                # print(MATRIX_INTERACTION)
+                interaction_list = []
+                for i in range(MATRIX_INTERACTION.shape[0]):
+                    for j in range(MATRIX_INTERACTION.shape[1]):
+                        interaction_list.append(MATRIX_INTERACTION[i][j])
+                Ci = np.sum(MATRIX_INTERACTION, axis = 0)
+                Ei = np.sum(MATRIX_INTERACTION, axis = 1)
+                # print(Ci, Ei)
+                CE_sum = np.sum(Ci) + np.sum(Ei)
+                w = [(Ci[i] + Ei[i]) / CE_sum for i in range(len(Ci))]
+                SGSI = []
+                for i in range(len(rank_matrix)):
+                    tmp  = [w[j] * rank_matrix[i][j] for j in range(len(w))]
+                    SGSI.append(sum(tmp) * 100)
+                # print(ringNo)
+                # 向redis中存放interaction_list：List[List[float]]和SGSI:List[float]
+                r.set(f'{project_name}_{task}_inter', str(interaction_list))
+                r.set(f'{project_name}_{task}_SGSI', str(SGSI))
+                r.set(f'{project_name}_{task}_ringNo', str(ringNo))
         return self.err_epoch
 
 #**************************** MBGD（结束） **************************** 
